@@ -1,0 +1,1 @@
+- Bump to `onnxruntime` version in `sentence_embeddings` to `1.23.0` to ensure compatibility with 16 KB page size devices (issue #22)
