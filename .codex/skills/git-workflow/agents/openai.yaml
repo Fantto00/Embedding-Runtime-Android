@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Workflow"
+  short_description: "Commit and push each completed change"
+  default_prompt: "Use $git-workflow to commit and push the completed changes."
