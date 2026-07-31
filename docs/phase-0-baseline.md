@@ -1,6 +1,6 @@
 # Phase 0：构建基线记录
 
-> 状态：阻塞于本机 Rust 工具链<br>
+> 状态：已完成<br>
 > 记录日期：2026-07-31<br>
 > 关联方案：[中文 Embedding Runtime 改造实施方案](./中文Embedding-Runtime改造实施方案.md)
 
@@ -14,7 +14,9 @@
 | NDK 声明 | `28.1.13356709` (r28b) |
 | ONNX Runtime Android 声明 | `1.23.0` |
 | Gradle wrapper | `8.11.1` |
-| `:sentence_embeddings:assembleRelease` | 成功，但未依赖 Rust `cargoBuild` 任务 |
+| Rust stable | `rustc 1.97.1` / `cargo 1.97.1` |
+| 已安装 Android Rust targets | `aarch64-linux-android`、`armv7-linux-androideabi`、`i686-linux-android`、`x86_64-linux-android` |
+| 完整构建 | `:sentence_embeddings:cargoBuild :sentence_embeddings:assembleRelease` 成功 |
 
 ## AAR 制品检查
 
@@ -26,17 +28,17 @@ sentence_embeddings/build/outputs/aar/sentence_embeddings-release.aar
 
 | 属性 | 值 |
 |---|---|
-| 大小 | 15,482 bytes |
-| SHA-256 | `8E55C0ADC492FDC89152B3E3F634C06AE4C524C4603907660A19AE49A886023C` |
-| AAR 条目 | `AndroidManifest.xml`、`classes.jar` |
+| 大小 | 5,468,731 bytes |
+| SHA-256 | `19D138FB3F8304C67A25C199CC3ABE08831045DBEB4FF6BDB8E11A7CC006ED5D` |
+| AAR 条目 | `AndroidManifest.xml`、`classes.jar`、四个 `jni/*/libhftokenizer.so` |
 | Java/Kotlin 类 | `HFTokenizer`、`HFTokenizer.Result`、`SentenceEmbedding` |
-| JNI 库 | **未包含** |
+| JNI 库 | `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 均已包含 |
 
-这不是可交付 AAR：其中缺少运行 `HFTokenizer` 所需的 `libhftokenizer.so`。因此，单独执行 `assembleRelease` 不能作为本项目的完整基线验证。
+单独执行 `assembleRelease` 时没有自动依赖 Rust `cargoBuild`，会产生缺少 JNI 库的 15,482-byte 无效 AAR。因此，本项目的完整基线命令必须显式包含 `cargoBuild`。
 
 ## Native 构建诊断
 
-项目定义了 `cargoBuild`、`cargoBuildArm`、`cargoBuildArm64`、`cargoBuildX86` 和 `cargoBuildX86_64` 任务。执行：
+项目定义了 `cargoBuild`、`cargoBuildArm`、`cargoBuildArm64`、`cargoBuildX86` 和 `cargoBuildX86_64` 任务。首次执行 native 构建时因未安装 Rust 工具链而失败：
 
 ```powershell
 .\gradlew.bat :sentence_embeddings:cargoBuild --stacktrace
@@ -48,24 +50,24 @@ sentence_embeddings/build/outputs/aar/sentence_embeddings-release.aar
 Cannot run program "rustc": CreateProcess error=2, 系统找不到指定的文件。
 ```
 
-`rustup`、`cargo` 与 `rustc` 当前均不在系统 PATH。因此没有生成 `libhftokenizer.so`，AAR 也无法打入各 ABI 的 JNI 库。
+安装 Rust stable 和四个 Android target 后，重新运行完整构建成功。Rust 编译仅报告上游 `rs-hf-tokenizer/src/lib.rs` 中 `jbyteArray` 未使用，以及 linker stdout 警告；没有编译错误。
 
-## 后续前置条件
+## 可复现构建前置条件
 
-继续 Phase 0 前，需要安装并在新终端中确认 Rust stable 工具链（`rustup`、`cargo`、`rustc`），然后安装项目要求的 Android Rust targets：
+在新环境中，先安装并确认 Rust stable 工具链（`rustup`、`cargo`、`rustc`），然后安装项目要求的 Android Rust targets：
 
 ```powershell
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 ```
 
-工具链就绪后依序执行：
+工具链就绪后执行：
 
 ```powershell
 .\gradlew.bat :sentence_embeddings:cargoBuild --stacktrace
 .\gradlew.bat :sentence_embeddings:assembleRelease --stacktrace
 ```
 
-然后重新检查 AAR 是否包含：
+再检查 AAR 是否包含：
 
 ```text
 jni/arm64-v8a/libhftokenizer.so
@@ -75,4 +77,4 @@ jni/x86_64/libhftokenizer.so
 ```
 
 > [!WARNING]
-> 不要通过提交预编译 `.so`、跳过 `cargoBuild`，或改写 JNI 包名来绕过该前置条件。先得到可复现的 native 构建与完整 AAR，才进入 API 和 pooling 改造。
+> 不要通过提交预编译 `.so`、跳过 `cargoBuild`，或改写 JNI 包名来绕过该前置条件。已确认可复现的 native 构建与完整 AAR 后，才进入 API 和 pooling 改造。
