@@ -19,6 +19,9 @@ class SentenceEmbedding {
     private var useTokenTypeIds: Boolean = false
     private var outputTensorName: String = ""
     private var normalizeEmbedding: Boolean = false
+    private var poolingStrategy = PoolingStrategy.MEAN
+    private var dimensions: Int? = null
+    private var queryPrefix: String? = null
 
     suspend fun init(
         modelFilepath: String,
@@ -28,6 +31,9 @@ class SentenceEmbedding {
         useFP16: Boolean = false,
         useXNNPack: Boolean = false,
         normalizeEmbeddings: Boolean,
+        poolingStrategy: PoolingStrategy = PoolingStrategy.MEAN,
+        dimensions: Int? = null,
+        queryPrefix: String? = null,
     ) = withContext(Dispatchers.IO) {
         hfTokenizer = HFTokenizer(tokenizerBytes)
         ortEnvironment = OrtEnvironment.getEnvironment()
@@ -48,6 +54,9 @@ class SentenceEmbedding {
         this@SentenceEmbedding.useTokenTypeIds = useTokenTypeIds
         this@SentenceEmbedding.outputTensorName = outputTensorName
         this@SentenceEmbedding.normalizeEmbedding = normalizeEmbeddings
+        this@SentenceEmbedding.poolingStrategy = poolingStrategy
+        this@SentenceEmbedding.dimensions = dimensions
+        this@SentenceEmbedding.queryPrefix = queryPrefix
         Log.d(SentenceEmbedding::class.simpleName, "Input Names: " + ortSession.inputNames.toList())
         Log.d(
             SentenceEmbedding::class.simpleName,
@@ -55,9 +64,13 @@ class SentenceEmbedding {
         )
     }
 
-    suspend fun encode(sentence: String): FloatArray =
+    suspend fun encode(
+        sentence: String,
+        purpose: EmbeddingPurpose = EmbeddingPurpose.PASSAGE,
+    ): FloatArray =
         withContext(Dispatchers.IO) {
-            val result = hfTokenizer.tokenize(sentence)
+            val text = if (purpose == EmbeddingPurpose.QUERY && !queryPrefix.isNullOrBlank()) "$queryPrefix$sentence" else sentence
+            val result = hfTokenizer.tokenize(text)
             val inputTensorMap = mutableMapOf<String, OnnxTensor>()
             val idsTensor =
                 OnnxTensor.createTensor(
@@ -83,9 +96,17 @@ class SentenceEmbedding {
                 inputTensorMap["token_type_ids"] = tokenTypeIdsTensor
             }
             val outputs = ortSession.run(inputTensorMap)
-            val tokenEmbeddings3D = outputs.get(0).value as Array<Array<FloatArray>>
+            val tokenEmbeddings3D = outputs.get(outputTensorName).orElseThrow {
+                IllegalArgumentException("Missing output tensor: $outputTensorName")
+            }.value as Array<Array<FloatArray>>
             val tokenEmbeddings = tokenEmbeddings3D[0]
-            val pooledEmbedding = meanPooling(tokenEmbeddings, result.attentionMask)
+            val pooledEmbedding = when (poolingStrategy) {
+                PoolingStrategy.MEAN -> meanPooling(tokenEmbeddings, result.attentionMask)
+                PoolingStrategy.CLS -> tokenEmbeddings.first().copyOf()
+            }
+            require(dimensions == null || pooledEmbedding.size == dimensions) {
+                "Embedding dimension ${pooledEmbedding.size} does not match configured $dimensions"
+            }
             return@withContext if (normalizeEmbedding) {
                 normalize(pooledEmbedding)
             } else {
