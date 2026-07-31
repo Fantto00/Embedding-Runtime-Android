@@ -58,6 +58,10 @@ cargo {
     verbose = true
 }
 
+tasks.named("preBuild") {
+    dependsOn("cargoBuild")
+}
+
 mavenPublishing {
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()

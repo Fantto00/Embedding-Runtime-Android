@@ -16,7 +16,7 @@
 | Gradle wrapper | `8.11.1` |
 | Rust stable | `rustc 1.97.1` / `cargo 1.97.1` |
 | 已安装 Android Rust targets | `aarch64-linux-android`、`armv7-linux-androideabi`、`i686-linux-android`、`x86_64-linux-android` |
-| 完整构建 | `:sentence_embeddings:cargoBuild :sentence_embeddings:assembleRelease` 成功 |
+| 完整构建 | `:sentence_embeddings:cargoBuild :sentence_embeddings:assembleRelease` 成功；标准 `assembleRelease` 也已验证会触发 native 构建 |
 
 ## AAR 制品检查
 
@@ -34,7 +34,7 @@ sentence_embeddings/build/outputs/aar/sentence_embeddings-release.aar
 | Java/Kotlin 类 | `HFTokenizer`、`HFTokenizer.Result`、`SentenceEmbedding` |
 | JNI 库 | `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 均已包含 |
 
-单独执行 `assembleRelease` 时没有自动依赖 Rust `cargoBuild`，会产生缺少 JNI 库的 15,482-byte 无效 AAR。因此，本项目的完整基线命令必须显式包含 `cargoBuild`。
+上游的单独 `assembleRelease` 曾不依赖 Rust `cargoBuild`，会产生缺少 JNI 库的 15,482-byte 无效 AAR。现已将 `cargoBuild` 接入 `preBuild`；清理模块生成物后执行标准 `:sentence_embeddings:assembleRelease` 已验证会重新编译四个 ABI 并打入 AAR。
 
 ## Native 构建诊断
 
@@ -63,7 +63,6 @@ rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-andro
 工具链就绪后执行：
 
 ```powershell
-.\gradlew.bat :sentence_embeddings:cargoBuild --stacktrace
 .\gradlew.bat :sentence_embeddings:assembleRelease --stacktrace
 ```
 
@@ -77,4 +76,4 @@ jni/x86_64/libhftokenizer.so
 ```
 
 > [!WARNING]
-> 不要通过提交预编译 `.so`、跳过 `cargoBuild`，或改写 JNI 包名来绕过该前置条件。已确认可复现的 native 构建与完整 AAR 后，才进入 API 和 pooling 改造。
+> 不要通过提交预编译 `.so`、移除 `preBuild -> cargoBuild` 依赖，或改写 JNI 包名来绕过该前置条件。已确认可复现的 native 构建与完整 AAR 后，才进入 API 和 pooling 改造。
