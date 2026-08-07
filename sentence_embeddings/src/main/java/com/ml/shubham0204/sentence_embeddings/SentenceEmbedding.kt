@@ -5,15 +5,16 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.providers.NNAPIFlags
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.nio.LongBuffer
 import java.util.EnumSet
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.sqrt
 
 class SentenceEmbedding : SentenceEmbedder {
-    private val mutex = Mutex()
+    // AutoCloseable.close() is synchronous, so all lifecycle operations share a JVM lock.
+    private val lifecycleLock = ReentrantLock()
     private var tokenizer: HFTokenizer? = null
     private var session: OrtSession? = null
     private var config: EmbeddingModelConfig? = null
@@ -45,30 +46,36 @@ class SentenceEmbedding : SentenceEmbedder {
     }
 
     private suspend fun initializeInternal(modelPath: String, tokenizerBytes: ByteArray, modelConfig: EmbeddingModelConfig, useFP16: Boolean, useXNNPack: Boolean) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            check(!closed) { throw EmbeddingException.Closed() }
+        lifecycleLock.withLock {
+            if (closed) throw EmbeddingException.Closed()
             closeResources()
+            var createdSession: OrtSession? = null
+            var createdTokenizer: HFTokenizer? = null
             try {
                 val environment = OrtEnvironment.getEnvironment()
                 val options = OrtSession.SessionOptions().apply {
                     if (useFP16) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
                     if (useXNNPack) addXnnpack(mapOf("intra_op_num_threads" to "2"))
                 }
-                val createdSession = try { environment.createSession(modelPath, options) } finally { options.close() }
+                createdSession = try { environment.createSession(modelPath, options) } finally { options.close() }
                 validateInputs(createdSession.inputNames)
-                tokenizer = HFTokenizer(tokenizerBytes)
+                createdTokenizer = HFTokenizer(tokenizerBytes)
                 session = createdSession
+                tokenizer = createdTokenizer
                 config = modelConfig
+                createdSession = null
+                createdTokenizer = null
             } catch (error: Throwable) {
-                closeResources()
+                closeWithSuppression(createdSession, error)
+                closeWithSuppression(createdTokenizer, error)
                 throw EmbeddingException.ModelLoadFailed(error)
             }
         }
     }
 
     override suspend fun encode(text: String, purpose: EmbeddingPurpose): FloatArray = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            check(!closed) { throw EmbeddingException.Closed() }
+        lifecycleLock.withLock {
+            if (closed) throw EmbeddingException.Closed()
             val activeSession = session ?: throw EmbeddingException.NotInitialized()
             val activeTokenizer = tokenizer ?: throw EmbeddingException.NotInitialized()
             val activeConfig = config ?: throw EmbeddingException.NotInitialized()
@@ -94,10 +101,12 @@ class SentenceEmbedding : SentenceEmbedder {
         }
     }
 
-    override fun close() = synchronized(this) {
-        if (closed) return
-        closed = true
-        closeResources()
+    override fun close() {
+        lifecycleLock.withLock {
+            if (closed) return
+            closed = true
+            closeResources()
+        }
     }
 
     private fun createInputs(session: OrtSession, tokens: HFTokenizer.Result): MutableMap<String, OnnxTensor> {
@@ -130,8 +139,30 @@ class SentenceEmbedding : SentenceEmbedder {
     }
 
     private fun closeResources() {
-        session?.close(); session = null
-        tokenizer?.close(); tokenizer = null
+        val activeSession = session
+        val activeTokenizer = tokenizer
+        session = null
+        tokenizer = null
         config = null
+        var closeFailure: Throwable? = null
+        try {
+            activeSession?.close()
+        } catch (error: Throwable) {
+            closeFailure = error
+        }
+        try {
+            activeTokenizer?.close()
+        } catch (error: Throwable) {
+            closeFailure?.addSuppressed(error) ?: run { closeFailure = error }
+        }
+        closeFailure?.let { throw it }
+    }
+
+    private fun closeWithSuppression(resource: AutoCloseable?, failure: Throwable) {
+        try {
+            resource?.close()
+        } catch (closeError: Throwable) {
+            failure.addSuppressed(closeError)
+        }
     }
 }
