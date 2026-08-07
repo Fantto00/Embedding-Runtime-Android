@@ -4,16 +4,18 @@ import org.json.JSONObject
 
 class HFTokenizer(
     tokenizerBytes: ByteArray,
-) {
+) : AutoCloseable {
     data class Result(
         val ids: LongArray = longArrayOf(),
         val attentionMask: LongArray = longArrayOf(),
         val tokenTypeIds: LongArray = longArrayOf(),
     )
 
-    private val tokenizerPtr: Long = createTokenizer(tokenizerBytes)
+    private var tokenizerPtr: Long = createTokenizer(tokenizerBytes)
 
+    @Synchronized
     fun tokenize(text: String): Result {
+        check(tokenizerPtr != 0L) { "Tokenizer is closed" }
         val output = tokenize(tokenizerPtr, text)
         val jsonObject = JSONObject(output)
         val idsArray = jsonObject.getJSONArray("ids")
@@ -34,8 +36,12 @@ class HFTokenizer(
         return Result(ids, attentionMask, tokenTypeIds)
     }
 
-    fun close() {
-        deleteTokenizer(tokenizerPtr)
+    @Synchronized
+    override fun close() {
+        if (tokenizerPtr == 0L) return
+        val pointer = tokenizerPtr
+        tokenizerPtr = 0L
+        deleteTokenizer(pointer)
     }
 
     private external fun createTokenizer(tokenizerBytes: ByteArray): Long
